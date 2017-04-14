@@ -1,6 +1,9 @@
 library(RPostgreSQL)
 library(jsonlite)
 library(dplyr)
+library(tidyr)
+library(stringr)
+
 
 connect_db <- function(){
   drv <- dbDriver("PostgreSQL")
@@ -32,10 +35,10 @@ download_matchinfo <- function(dbcon, start_row, nr_matches){
 }
 
 download_json <- function(dbcon, matchids, partial_df=NULL){
-  
+
   # remove matchids which are already in partial_df
   if (!is.null(partial_df)){
-    matchids <- subset(matchids, !matchids %in% partial_df$matchid)
+    matchids <- subset(matchids, !matchids %in% unique(partial_df$matchid))
   }
   
   # download from db and parse json column
@@ -45,9 +48,9 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
   json_df$opendotajsondata <- lapply(json_df[, "opendotajsondata"], FUN = function(x) fromJSON(x))
   json_df$processed <- FALSE
   
-  if (!is.null(partial_df)){
-    json_df <- rbind(partial_df, json_df)
-  }
+  # if (!is.null(partial_df)){
+  #   json_df <- rbind(partial_df, json_df)
+  # }
   
   return(json_df)
 }
@@ -88,10 +91,8 @@ get_lane_info <- function(json_df){
     for (player_nr in 1:10){
       lane_pos <- clean_lane_info(jsonmatch, lane_pos_list, player_nr)
       
-      # Calculate weighted mid point of the lane position.
-      # Greater weight if position has been visited more.
-      # Also calculate distance of each point to mid points 
-      # and median points
+      # Calculate weighted mid point of the lane position. Greater weight if position has been 
+      # visited more. Also calculate distance of each point to mid points and median points.
       
       lane_pos <- lane_pos %>%
         mutate(mean_x_pos = weighted.mean(x, value),
@@ -125,5 +126,16 @@ get_lane_info <- function(json_df){
   return(do.call(rbind, lane_data_all))
 }
 
+add_new_data <- function(dbcon, matchids, lane_data_df){
+  
+  # Downloads jsons from matchids which are not already in partial_df
+  json_df <- download_json(dbcon, matchids, lane_data_df)
+  
+  lane_data <- get_lane_info(json_df)
+  
+  updated_df <- rbind(lane_data_df, lane_data)
+  
+  return(updated_df)
+}
 
 
