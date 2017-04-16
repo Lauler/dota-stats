@@ -41,6 +41,10 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
     matchids <- subset(matchids, !matchids %in% unique(partial_df$matchid))
   }
   
+  if (length(matchids) == 0) {
+    stop("All the supplied matchids have already been processed.")
+  }
+  
   # download from db and parse json column
   matchids <- paste0("'", matchids, "'", collapse = ", ")
   json_data <- dbSendQuery(dbcon, paste0("SELECT * FROM overview WHERE matchid IN (", matchids, ")"))
@@ -48,9 +52,9 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
   json_df$opendotajsondata <- lapply(json_df[, "opendotajsondata"], FUN = function(x) fromJSON(x))
   json_df$processed <- FALSE
   
-  # if (!is.null(partial_df)){
-  #   json_df <- rbind(partial_df, json_df)
-  # }
+  if (!is.null(partial_df)){
+    json_df <- rbind(partial_df, json_df)
+  }
   
   return(json_df)
 }
@@ -105,6 +109,7 @@ get_lane_info <- function(json_df){
                avg_median_dist = weighted.mean(median_dist, value))
       
       player_lane_data <- data_frame(matchid = jsonmatch$match_id,
+                                     accountid = jsonmatch$players$account_id[player_nr],
                                      slot = jsonmatch$players$player_slot[player_nr],
                                      hero_id = jsonmatch$players$hero_id[player_nr],
                                      solo_rating = jsonmatch$players$solo_competitive_rank[player_nr],
@@ -126,16 +131,32 @@ get_lane_info <- function(json_df){
   return(do.call(rbind, lane_data_all))
 }
 
-add_new_data <- function(dbcon, matchids, lane_data_df){
+read_updated_data <- function(path){
+  dota <- read_rds(path)
   
-  # Downloads jsons from matchids which are not already in partial_df
-  json_df <- download_json(dbcon, matchids, lane_data_df)
+  json_df <- as_data_frame(dota[1]) # Access jsons (don't print this)
+  json_df <- json_df %>%
+    bind_cols(dota[2], dota[3])
   
-  lane_data <- get_lane_info(json_df)
+  lanes_data_df <- as_data_frame(do.call(cbind, dota[4:(length(dota)-1)]))
+  lanes_data_df <- lanes_data_df %>%
+    bind_cols(dota[length(dota)])
   
-  updated_df <- rbind(lane_data_df, lane_data)
-  
-  return(updated_df)
+  return(list(json_df = json_df, lanes_data_df = lanes_data_df))
 }
 
+add_new_data <- function(dbcon, matchids, old_json_df, old_lane_data_df, path){
+  # Downloads jsons from matchids which are not already in partial_df
+  json_df <- download_json(dbcon, matchids, old_json_df)
+  
+  new_lane_data <- get_lane_info(json_df)
+  json_df$processed <- TRUE
+  
+  updated_df <- rbind(old_lane_data_df, new_lane_data)
+  saveRDS(object = c(json_df, updated_df), file = path)
+  
+  jsons_and_lanes_df <- read_updated_data(path)
+  
+  return(jsons_and_lanes_df)
+}
 
