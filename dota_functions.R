@@ -3,6 +3,7 @@ library(jsonlite)
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(readr)
 
 
 connect_db <- function(){
@@ -10,7 +11,7 @@ connect_db <- function(){
   # creates a connection to the postgres database
   # Use "con" later in each connection to the database
   
-  con <- dbConnect(drv, dbname = "dotaliu",
+  con <- dbConnect(drv, dbname = "dotaliu_v2",
                    host = "dotaliu.cpuvi9hzbwlb.eu-west-1.rds.amazonaws.com", port = 5432,
                    user = "dotaliu", password = readline(prompt = "Enter password for dotaliu db: "))
   
@@ -57,6 +58,16 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
   }
   
   return(json_df)
+}
+
+download_heroentry <- function(dbcon, matchids){
+  
+  matchids <- paste0("'", matchids, "'", collapse = ", ")
+  hero_data <- dbSendQuery(dbcon, paste0("SELECT matchid, tick, slot, herocellx, herocelly, health 
+                                         FROM heroentry WHERE matchid IN (", matchids, ")"))
+  hero_df <- dbFetch(hero_data)
+  
+  return(hero_df)
 }
 
 
@@ -131,18 +142,19 @@ get_lane_info <- function(json_df){
   return(do.call(rbind, lane_data_all))
 }
 
-read_updated_data <- function(path){
-  dota <- read_rds(path)
+read_updated_data <- function(path, output = "both"){
+  json_df <- read_rds(paste0(path, "_json.rdata"))
+  lanes_data_df <- read_rds(paste0(path, "_lane.rdata"))
   
-  json_df <- as_data_frame(dota[1]) # Access jsons (don't print this)
-  json_df <- json_df %>%
-    bind_cols(dota[2], dota[3])
-  
-  lanes_data_df <- as_data_frame(do.call(cbind, dota[4:(length(dota)-1)]))
-  lanes_data_df <- lanes_data_df %>%
-    bind_cols(dota[length(dota)])
-  
-  return(list(json_df = json_df, lanes_data_df = lanes_data_df))
+  if (output == "both") {
+    return(list(json_df = json_df, lanes_data_df = lanes_data_df))
+  } 
+  else if (output == "lane") {
+    return(lanes_data_df)
+  }
+  else if (output == "json"){
+    return(json_df)
+  }
 }
 
 add_new_data <- function(dbcon, matchids, old_json_df, old_lane_data_df, path){
@@ -153,10 +165,31 @@ add_new_data <- function(dbcon, matchids, old_json_df, old_lane_data_df, path){
   json_df$processed <- TRUE
   
   updated_df <- rbind(old_lane_data_df, new_lane_data)
-  saveRDS(object = c(json_df, updated_df), file = path)
+  saveRDS(object = json_df, file = paste0(path, "_json.rdata"))
+  saveRDS(object = updated_df, file = paste0(path, "_lane.rdata"))
   
-  jsons_and_lanes_df <- read_updated_data(path)
-  
-  return(jsons_and_lanes_df)
+  print("Data added. Read with function read_updated_data().")
 }
 
+join_herorank <- function(dbcon, matchids) {
+
+  json_df <- download_json(dbcon, matchids) # download jsons
+  hero_df <- download_heroentry(dbcon, matchids) # download hero pos
+  ranks_list <- list()
+  
+  for (match in 1:length(json_df[["matchid"]])) {
+    rank_df <- data.frame(solo_rank = json_df$opendotajsondata[[match]]$players$solo_competitive_rank, 
+                          slot = json_df$opendotajsondata[[match]]$players$player_slot,
+                          matchid = json_df$matchid[[match]])
+    
+    rank_df$slot[6:10] <- rank_df$slot[6:10] - 123 # transform slots 128:133 to 5:9
+    ranks_list[[match]] <- rank_df
+  }
+  
+  rank_df <- do.call(rbind, ranks_list)
+  
+  combined_df <- hero_df %>%
+    left_join(rank_df, by = c("matchid", "slot"))
+
+  return(combined_df)
+}
