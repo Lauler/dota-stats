@@ -36,7 +36,8 @@ download_matchinfo <- function(dbcon, start_row, nr_matches){
 }
 
 download_json <- function(dbcon, matchids, partial_df=NULL){
-
+  browser()
+  
   # remove matchids which are already in partial_df
   if (!is.null(partial_df)){
     matchids <- subset(matchids, !matchids %in% unique(partial_df$matchid))
@@ -51,7 +52,8 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
   json_data <- dbSendQuery(dbcon, paste0("SELECT * FROM overview WHERE matchid IN (", matchids, ")"))
   json_df <- dbFetch(json_data)
   json_df$opendotajsondata <- lapply(json_df[, "opendotajsondata"], FUN = function(x) fromJSON(x))
-  json_df$processed <- FALSE
+  json_df$processed_pos <- FALSE
+  json_df$processed_vars <- FALSE
   
   if (!is.null(partial_df)){
     json_df <- rbind(partial_df, json_df)
@@ -92,7 +94,7 @@ clean_lane_info <- function(jsonmatch, lane_pos_list, player_nr){
 
 get_lane_info <- function(json_df){
   
-  uncleaned_json <- json_df[json_df$processed == FALSE, ]
+  uncleaned_json <- json_df[json_df$processed_pos == FALSE, ]
   lane_data_match <- list()
   lane_data_all <- list()
   
@@ -162,7 +164,7 @@ add_new_data <- function(dbcon, matchids, old_json_df, old_lane_data_df, path){
   json_df <- download_json(dbcon, matchids, old_json_df)
   
   new_lane_data <- get_lane_info(json_df)
-  json_df$processed <- TRUE
+  json_df$processed_pos <- TRUE
   
   updated_df <- rbind(old_lane_data_df, new_lane_data)
   saveRDS(object = json_df, file = paste0(path, "_json.rdata"))
@@ -172,7 +174,9 @@ add_new_data <- function(dbcon, matchids, old_json_df, old_lane_data_df, path){
 }
 
 join_herorank <- function(dbcon, matchids) {
-
+  # Needs partial_df
+  browser()
+  
   json_df <- download_json(dbcon, matchids) # download jsons
   hero_df <- download_heroentry(dbcon, matchids) # download hero pos
   ranks_list <- list()
@@ -193,3 +197,69 @@ join_herorank <- function(dbcon, matchids) {
 
   return(combined_df)
 }
+
+join_jsonvars <- function(dbcon, json_df){
+  uncleaned_json <- json_df[json_df$processed_var == FALSE, ]
+  
+  for (match in 1:nrow(uncleaned_json)){
+    
+    # Check whether replay was parsed by opendota
+    if ( all(is.na(jsonmatch$players$lane_pos)) ) next 
+    
+    slot <- dota$json_df$opendotajsondata[[match]]$players$player_slot 
+    duration <- dota$json_df$opendotajsondata[[match]]$duration
+    radiant_win <- dota$json_df$opendotajsondata[[match]]$radiant_win
+    radiant_score <- dota$json_df$opendotajsondata[[match]]$radiant_score
+    dire_score <- dota$json_df$opendotajsondata[[match]]$dire_score
+    kills_per_min <- dota$json_df$opendotajsondata[[match]]$players$kills/duration
+    deaths_per_min <- dota$json_df$opendotajsondata[[match]]$players$deaths/duration
+    assists_per_min <- dota$json_df$opendotajsondata[[match]]$players$assists/duration
+    hero_dmg_pm <- dota$json_df$opendotajsondata[[match]]$players$hero_damage/duration
+    hero_healing_pm <- dota$json_df$opendotajsondata[[match]]$players$hero_healing/duration
+    buybacks <- dota$json_df$opendotajsondata[[match]]$players$buyback_count
+    radiant_gold_adv_at_5 <- dota$json_df$opendotajsondata[[match]]$radiant_gold_adv[5]
+    radiant_gold_adv_at_10 <- dota$json_df$opendotajsondata[[match]]$radiant_gold_adv[10]
+    radiant_gold_adv_at_15 <- dota$json_df$opendotajsondata[[match]]$radiant_gold_adv[15]
+    denies_at_5 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,5]
+    denies_at_10 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,10]
+    denies_at_15 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,15]
+    lasthits_at_5 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,5]
+    lasthits_at_10 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,10]
+    gpm_at_5 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$gold_t)[,5]
+    gpm_at_10 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$gold_t)[,10]
+    obswards_placed_pm <- dota$json_df$opendotajsondata[[match]]$players$obs_placed/duration
+    sentwards_placed_pm <- dota$json_df$opendotajsondata[[match]]$players$sen_placed/duration
+    rune_pickups_pm <- dota$json_df$opendotajsondata[[match]]$players$rune_pickups/duration
+    
+    if (length(dota$json_df$opendotajsondata[[2]]$players$times) >= 30) {
+      lasthits_at_30 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$dn_t)[,30]
+      radiant_gold_adv_at_30 <- dota$json_df$opendotajsondata[[match]]$radiant_gold_adv[30]
+      gpm_at_30 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$gold_t)[,30]
+    } 
+    
+    if (length(dota$json_df$opendotajsondata[[2]]$players$times) >= 20) {
+      radiant_gold_adv_at_20 <- dota$json_df$opendotajsondata[[match]]$radiant_gold_adv[20]
+      lasthits_at_20 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$lh_t)[,20]
+      gpm_at_20 <- do.call(rbind, dota$json_df$opendotajsondata[[match]]$players$gold_t)[,20]
+    }
+    
+  }
+
+}
+
+str(dota$json_df$opendotajsondata[[2]], max.level = 2)
+
+dota$json_df$opendotajsondata[[2]]$players$stuns
+dota$json_df$opendotajsondata[[2]]$players$gold_per_min
+do.call(rbind, dota$json_df$opendotajsondata[[2]]$players$gold_t)
+
+do.call(rbind, dota$json_df$opendotajsondata[[2]]$players$lh_t)[,5]
+
+dota$json_df$opendotajsondata[[2]]$players$times
+dota$json_df$opendotajsondata[[2]]$players$damage
+dota$json_df$opendotajsondata[[2]]$players$buyback_count
+dota$json_df$opendotajsondata[[2]]$players$solo_competitive_rank
+
+dota$json_df$opendotajsondata[[2]]$players$item_uses$blink
+dota$json_df$opendotajsondata[[2]]$players$first_purchase_time$blink
+dota$json_df$opendotajsondata[[2]]$players$actions
