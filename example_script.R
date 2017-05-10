@@ -1,52 +1,48 @@
 library(readr)
-library(ggplot2)
+library(anytime)
 
 # Reads functions 
 source("C:\\Users\\Faton\\Desktop\\R-ovning\\Game data mining\\Dota2\\dota stats\\dota_functions.R")
 
-path <- "C:\\Users\\Faton\\Desktop\\R-ovning\\Game data mining\\Dota2\\data\\dota"
+path <- "F:\\dota_data\\storage\\"
 
 # Connect db
 con <- connect_db()
 
 # Get matchinfo
-matchinfo <- download_matchinfo(dbcon = con, start_row = 1, nr_matches = 150)
-head(matchinfo)
-matchinfo$matchid
-matchinfo
+matchinfo <- download_matchinfo(dbcon = con, start_row = 1, nr_matches = 10000)
+minfo <- as_data_frame(matchinfo)
+
+minfo$time <- anytime(matchinfo$matchdatetime)
+
+sum(minfo$time > "2017-04-09 22:07:58 CEST")
+
 ### ONLY USE THIS IF YOU ARE DOWNLOADING DATA FOR THE FIRST TIME ###
 # First time reading in data, old_json_df and old_lane_data_df need to be NULL.
-# This function saves the results to path as an .rdata file.
+# The function saves the results to path as an .rdata file.
+# NULL parameters overwrite old data.
 dota <- add_new_data(dbcon = con, matchids = matchinfo$matchid[1:20], old_json_df = NULL,
-                     old_lane_data_df = NULL, path = path)
+                     old_df = NULL, path = path)
 
 ### Use this if you already have data on your harddrive ###
 dota <- read_updated_data(path, output = "both")
-dota
 
 # Updates any matchids which have not yet been processed, saves them to your drive,
-# then reads the saved file and returns the result as output.
-dota <- add_new_data(dbcon = con, matchids = matchinfo$matchid[1470:1497], old_json_df = dota$json_df,
-                     old_lane_data_df = dota$lanes_data_df, path = path)
+# The save appends new data to the old data.
+add_new_data(dbcon = con, matchids = matchinfo$matchid[8030:8154], old_json_df = dota$json_df,
+             old_df = dota$dota_df, path = path)
 
 
-dota$lanes_data_df
-
-ggplot(dota$lanes_data_df, aes(x = as.numeric(solo_rating))) +
-  geom_histogram()
-
-
-dota <- read_updated_data(path, output = "lane")
+### For starting new jsonchunks (when saved jsons become too big to fit in memory) ###
+add_new_data(dbcon = con, matchids = matchinfo$matchid[8000:8030], old_json_df = NULL,
+             old_df = dota$dota_df, path = path)
 
 
-############
-
-jso <- download_json(dbcon = con, matchids = 3134802295)
-oview <- download_json(dbcon = con, matchids = 3134802295)
-
-test <- join_herorank(dbcon = con, matchids = 3134802295)
-
-con <- connect_db()
-
-hero <- join_herorank(dbcon = con, matchids = 3136168764)
+### Save and add data in chunks of 100.
+for (i in 80:82){
+  add_new_data(dbcon = con, matchids = matchinfo$matchid[(i*100):(i*100+100)], old_json_df = dota$json_df,
+               old_df = dota$dota_df, path = path)
+  
+  dota <- read_updated_data(path, output = "both")
+}
 
