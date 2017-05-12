@@ -29,9 +29,9 @@ describe_db <- function(){
 
 
 download_matchinfo <- function(dbcon, start_row, nr_matches){
-  dbmatch <- dbSendQuery(dbcon, paste0("SELECT * FROM match limit ", nr_matches, 
-                                       " offset ", start_row))
-  match <- dbFetch(dbmatch)
+  match <- dbGetQuery(dbcon, paste0("SELECT * FROM match limit ", nr_matches, 
+                                      " offset ", start_row))
+  
   return(match)
 }
 
@@ -64,13 +64,29 @@ download_json <- function(dbcon, matchids, partial_df=NULL){
 download_heroentry <- function(dbcon, matchids){
   
   matchids <- paste0("'", matchids, "'", collapse = ", ")
-  hero_data <- dbSendQuery(dbcon, paste0("SELECT matchid, tick, slot, herocellx, herocelly, health 
-                                         FROM heroentry WHERE matchid IN (", matchids, ")"))
-  hero_df <- dbFetch(hero_data)
+  hero_df <- dbGetQuery(dbcon, paste0("SELECT matchid, tick, slot, herocellx, herocelly, health 
+                                      FROM heroentry WHERE matchid IN (", matchids, ")"))
   
-  return(hero_df)
+  return(as_data_frame(hero_df))
 }
 
+download_action <- function(dbcon, matchids){
+  
+  matchids <- paste0("'", matchids, "'", collapse = ", ")
+  action_df <- dbGetQuery(dbcon, paste0("SELECT matchid, tick, slot, type, key 
+                                        FROM action WHERE matchid IN (", matchids, ")"))
+  
+  return(as_data_frame(action_df))
+}
+
+download_playerentry <- function(dbcon, matchids){
+  
+  matchids <- paste0("'", matchids, "'", collapse = ", ")
+  player_df <- dbGetQuery(dbcon, paste0("SELECT matchid, tick, slot, type, cameracellx, cameracelly, health 
+                                        FROM playerentry WHERE matchid IN (", matchids, ")"))
+  
+  return(as_data_frame(player_df))
+}
 
 clean_lane_info <- function(jsonmatch, lane_pos_list, player_nr){
   
