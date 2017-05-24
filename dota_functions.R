@@ -156,10 +156,64 @@ get_lane_info <- function(json_df){
     }
     
     lane_data_all[[match]] <- do.call(rbind, lane_data_match)
+    lane_data_all[[match]]$slot[6:10] <- lane_data_all[[match]]$slot[6:10] - 123
+    
   }
   
   return(do.call(rbind, lane_data_all))
 }
+
+
+get_camera_changes <- function(camera_df){
+  # supply camera_df from download_playerentry()
+  
+  changes <- camera_df %>%
+    arrange(slot, tick) %>%
+    filter(health > 0) %>%
+    group_by(slot) %>%
+    mutate(deltax = abs(cameracellx - lag(cameracellx)),
+           deltay = abs(cameracelly - lag(cameracelly)),
+           deltatick = tick - lag(tick)) %>%
+    filter((deltax >= 10 | deltay >= 10)) %>%
+    mutate(dtick = tick - lag(tick)) %>% # deltadeltatick
+    filter(dtick >= 4 & deltatick <= 12) %>% 
+    select(matchid, tick, slot, type)
+  
+  
+  changes_tally <- changes %>%
+    tally() %>%
+    rename(nr_camera_changes = n)
+  
+  changes_tally$matchid <- unique(camera_df$matchid)
+  
+  cam_lst <- list(cam_changes = changes,
+                  tally = changes_tally)
+  
+  return(cam_lst)
+}
+
+
+get_action_latency <- function(action_df, cam_changes_df){
+  # action_df from download_action
+  # cam_changes_df from get_camera_changes()
+  
+  latency <- action_df %>%
+    full_join(cam_changes_df, by = c("matchid","slot", "tick", "type")) %>%
+    arrange(slot, tick) %>%
+    group_by(slot) %>%
+    mutate(action_latency = ifelse(type == "interval" & lead(type) == "action", yes = lead(tick) - tick, no = NA)) %>%
+    summarise(action_latency_mean = mean(action_latency, na.rm=TRUE),
+              action_latency_10th_percentile = quantile(action_latency, 0.10, na.rm = TRUE),
+              action_latency_1st_quartile = quantile(action_latency, 0.25, na.rm = TRUE),
+              action_latency_median = median(action_latency, na.rm = TRUE),
+              action_latency_3rd_quartile = quantile(action_latency, 0.75, na.rm = TRUE),
+              action_latency_90th_percentile = quantile(action_latency, 0.90, na.rm = TRUE))
+  
+  latency$matchid <- unique(action_df$matchid)
+  
+  return(latency)
+}
+
 
 read_updated_data <- function(path, output = "both"){
   json_df <- read_rds(paste0(path, "dota_json.rdata"))
@@ -223,6 +277,53 @@ join_herorank <- function(dbcon, matchids) {
   return(combined_df)
 }
 
+
+join_camera_latency <- function(dbcon, dota_df, matchids, path){
+  # supply dota_df from read_updated_data()
+  i <- 1
+  
+  for (matchid in matchids){
+    camera <- download_playerentry(dbcon, matchids = matchid)
+    action <- download_action(dbcon, matchids = matchid)
+    
+    if (nrow(camera) == 0 | nrow(action) == 0) next
+    
+    cam_changes <- get_camera_changes(camera)
+    latency <- get_action_latency(action, cam_changes$cam_changes)
+    
+    dota_df <- dota_df %>% 
+      mutate(matchid = as.character(matchid)) %>%
+      left_join(cam_changes$tally, by = c("matchid", "slot")) %>%
+      mutate(nr_camera_changes = coalesce(as.integer(nr_camera_changes.x), nr_camera_changes.y)) %>%
+      left_join(latency, by = c("matchid", "slot"))  %>%
+      mutate(action_latency_mean = coalesce(as.numeric(action_latency_mean.x), 
+                                            as.numeric(action_latency_mean.y)),
+             action_latency_10th_percentile = coalesce(as.numeric(action_latency_10th_percentile.x), 
+                                                       as.numeric(action_latency_10th_percentile.y)),
+             action_latency_1st_quartile = coalesce(as.numeric(action_latency_1st_quartile.x), 
+                                                    as.numeric(action_latency_1st_quartile.y)),
+             action_latency_median = coalesce(as.numeric(action_latency_median.x), 
+                                              as.numeric(action_latency_median.y)),
+             action_latency_3rd_quartile = coalesce(as.numeric(action_latency_3rd_quartile.x), 
+                                                    as.numeric(action_latency_3rd_quartile.y)),
+             action_latency_90th_percentile = coalesce(as.numeric(action_latency_90th_percentile.x), 
+                                                       as.numeric(action_latency_90th_percentile.y))) %>%
+      select(-ends_with(".y"), -ends_with(".x"))
+
+    print(paste("Match", i, "of", length(matchids), "done."))
+    i <- i + 1
+    
+    if (i %% 100 == 0){
+      saveRDS(dota_df, paste0(path, "dota.rdata"))
+    }
+    
+  }
+  
+  
+  saveRDS(dota_df, paste0(path, "dota.rdata"))
+  return(dota_df)
+}
+
 join_jsonvars <- function(json_df){
   
   uncleaned_json <- json_df[json_df$processed_var == FALSE, ]
@@ -240,6 +341,7 @@ join_jsonvars <- function(json_df){
     start_time <- match$players$start_time # unix time in seconds
     region <- match$players$region # https://github.com/odota/ui/blob/master/src/lang/en-US.json#L861
     lobby_type <- match$players$lobby_type # https://github.com/odota/ui/blob/master/src/lang/en-US.json#L404
+    accountid <- match$players$account_id
     slot <- match$players$player_slot
     slot[6:10] <- slot[6:10] - 123
     is_radiant <- match$players$isRadiant
@@ -296,13 +398,16 @@ join_jsonvars <- function(json_df){
     denies_at_10 <- do.call(rbind, match$players$dn_t)[,10]
     lasthits_at_5 <- do.call(rbind, match$players$dn_t)[,5]
     lasthits_at_10 <- do.call(rbind, match$players$dn_t)[,10]
-    gpm_at_5 <- do.call(rbind, match$players$gold_t)[,5]
-    gpm_at_10 <- do.call(rbind, match$players$gold_t)[,10]
-    xpm_at_5 <- do.call(rbind, match$players$xp_t)[,5]
-    xpm_at_10 <- do.call(rbind, match$players$xp_t)[,10]
+    gpm_at_end <- match$players$gold_per_min
+    gpm_at_5 <- do.call(rbind, match$players$gold_t)[,5]/5
+    gpm_at_10 <- do.call(rbind, match$players$gold_t)[,10]/10
+    xpm_at_end <- match$players$xp_per_min
+    xpm_at_5 <- do.call(rbind, match$players$xp_t)[,5]/5
+    xpm_at_10 <- do.call(rbind, match$players$xp_t)[,10]/10
     obswards_placed_pm <- match$players$obs_placed/duration
     sentwards_placed_pm <- match$players$sen_placed/duration
     rune_pickups_pm <- match$players$rune_pickups/duration
+    camps_stacked <- match$players$camps_stacked
     
     # Check who picked up the first bounty runes spawning at 00:00
     first_bounty_pickup <- rep(FALSE, 10)
@@ -374,8 +479,8 @@ join_jsonvars <- function(json_df){
         team_xp_adv <- c(rep(match$radiant_xp_adv[minutes], 5), -rep(match$radiant_xp_adv[minutes], 5))
         lasthits <- do.call(rbind, match$players$lh_t)[, minutes]
         denies <- do.call(rbind, match$players$dn_t)[, minutes]
-        gpm <- do.call(rbind, match$players$gold_t)[, minutes]
-        xpm <- do.call(rbind, match$players$xp_t)[, minutes]
+        gpm <- do.call(rbind, match$players$gold_t)[, minutes]/minutes
+        xpm <- do.call(rbind, match$players$xp_t)[, minutes]/minutes
         team_towerkills <- tower_kills$towerkills_15$team_towerkills
         team_towerkills_delta <- tower_kills$towerkills_15$team_towerkills_delta
         team_towerkills_adj <- tower_kills$towerkills_15$team_towerkills_adj
@@ -460,10 +565,13 @@ join_jsonvars <- function(json_df){
                        gpm_at_5 = gpm_at_5, gpm_at_10 = gpm_at_10, 
                        gpm_at_15 = gpm_at_15,
                        gpm_at_20 = gpm_at_20, 
-                       gpm_at_30 = gpm_at_30, xpm_at_5 = xpm_at_5, xpm_at_10 = xpm_at_10, 
+                       gpm_at_30 = gpm_at_30, gpm_at_end, xpm_at_5 = xpm_at_5, 
+                       xpm_at_10 = xpm_at_10, 
                        xpm_at_15 = xpm_at_15, 
                        xpm_at_20 = xpm_at_20,
                        xpm_at_30 = xpm_at_30, 
+                       xpm_at_end = xpm_at_end,
+                       camps_stacked = check_nullrows(camps_stacked),
                        obswards_placed_pm = check_nullrows(obswards_placed_pm),
                        sentwards_placed_pm = check_nullrows(sentwards_placed_pm), 
                        rune_pickups_pm = check_nullrows(rune_pickups_pm),
@@ -534,6 +642,7 @@ parse_objectives <- function(match){
   tower_killdeny <- match$objectives[match$objectives$type == "CHAT_MESSAGE_TOWER_KILL" 
                                      | match$objectives$type == "CHAT_MESSAGE_TOWER_DENY",]
   
+  
   if (nrow(tower_killdeny) > 0){
     
     team_first_tower_kill <- rep("No", 10)
@@ -603,7 +712,7 @@ parse_objectives <- function(match){
                             team_towerkills_adj = team_towerkills_adj, 
                             team_towerkills_delta_adj = team_towerkills_delta_adj)
    
-    first_roshan <- match$objectives[match$objectives$type == "CHAT_MESSAGE_ROSHA_KILL",]
+    first_roshan <- match$objectives[match$objectives$type == "CHAT_MESSAGE_ROSHAN_KILL",]
     
     team_first_roshan <- rep(NA, 10)
     
